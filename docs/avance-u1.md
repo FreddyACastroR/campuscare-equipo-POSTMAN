@@ -40,7 +40,7 @@ Adentro del enclave dejamos los seis procesos, la base H2 y el almacén de usuar
 | C1 | Credenciales → proceso 1 | Contraseñas hasheadas; ninguna vive en el código. |
 | C2 | Peticiones de ticket → procesos 2 y 3 | Se compara el ticket cargado contra quién pregunta, tanto al leer como al escribir. |
 | C3 | Proceso 4 → navegador | La salida se escapa antes de mandarse como HTML, y la CSP quita `unsafe-inline` como respaldo. |
-| C4 | Proceso 5 → sitio externo | Lista de destinos permitidos, nada de redes internas, y no se siguen redirecciones. |
+| C4 | Proceso 5 → sitio externo | Lista de destinos permitidos y nada de redes internas. El `HttpClient` de Java ya no sigue redirecciones por omisión; ese comportamiento se deja fijado de forma explícita para que no se pierda por accidente. |
 | C5 | Proceso 6 → navegador | La respuesta de error es genérica; el detalle de la excepción no sale del enclave. |
 
 ## 3. Decisiones de diseño
@@ -67,13 +67,13 @@ El riesgo que queda: el identificador de traza sigue confirmándole al cliente q
 
 | Amenaza | Prueba | Resultado esperado | Responsable |
 |---|---|---|---|
-| A1 | `lasContrasenasEstanHasheadas`: carga a `rivera` desde el `UserDetailsService` y revisa cómo quedó guardada su contraseña. | Debe empezar con `{bcrypt}$2` y no contener `demo123`. Hoy falla — la devuelve en claro. | Daniel Buelna |
-| A2 | `patchNoPuedeReasignarPropietario`: PATCH al ticket 1 con `{"owner":"admin"}`, autenticado como `rivera`, y luego un GET para releer el ticket. | El GET debe mostrar el dueño original: con el DTO puesto, el campo se descarta y la respuesta es 200. Hoy falla — también responde 200, pero la reasignación sí se guardó. | José Eduardo Aguilar |
-| A3 | `studentCannotReadAnotherUsersTicket`: `rivera` pide el ticket 2. Ya está escrita en el repo, marcada con `@Disabled`. | Debe responder 403. Hoy, si le quitamos la anotación, falla con 200 y devuelve el contenido ajeno. | Freddy Castro |
+| A1 | `lasContrasenasEstanHasheadas` (por escribir, llega con el PR de A1): carga a `rivera` desde el `UserDetailsService` y revisa cómo quedó guardada su contraseña. | Debe empezar con `{bcrypt}$2` y no contener `demo123`. Contra el baseline fallaría: hoy la contraseña se guarda en claro. | Daniel Buelna |
+| A2 | `patchNoPuedeReasignarPropietario` (por escribir, llega con el PR de A2): PATCH al ticket 1 con `{"owner":"admin"}`, autenticado como `rivera`, y luego un GET para releer el ticket. | El GET debe mostrar el dueño original: con el DTO puesto, el campo se descarta y la respuesta es 200. Contra el baseline fallaría: hoy también responde 200, pero la reasignación sí se guarda (lo reprodujimos con `curl`). | José Eduardo Aguilar |
+| A3 | `studentCannotReadAnotherUsersTicket`: `rivera` pide el ticket 2. Ya está escrita en el repo, marcada con `@Disabled`. | Debe responder 403. Hoy, si le quitamos la anotación, falla con `Status expected:<403> but was:<200>` y devuelve el contenido ajeno. | Freddy Castro |
 
-La de A2 la habíamos escrito esperando un 400, y al correrla con el DTO ya puesto nos devolvió 200: Spring Boot trae `FAIL_ON_UNKNOWN_PROPERTIES` desactivado por omisión, así que el campo desconocido se descarta sin avisarle a nadie. Lo dejamos así porque el control ya hace su trabajo — el dato no se puede expresar — pero eso cambia qué hay que revisar: lo que demuestra el arreglo no es el código de estado sino el dueño del ticket, por eso la prueba ahora relee y compara. Nos queda anotado que el atacante recibe un 200 y puede creer que funcionó, así que el registro del lado servidor es el que tiene que dejar constancia.
+La de A2 la habíamos planteado esperando un 400, pero al revisar cómo se comportaría con el DTO nos dimos cuenta de que respondería 200: Spring Boot trae `FAIL_ON_UNKNOWN_PROPERTIES` desactivado por omisión, así que un campo que el DTO no declara se descarta sin avisarle a nadie. Lo dejamos así porque el control ya hace su trabajo — el dato no se puede expresar — pero eso cambia qué hay que revisar: lo que demuestra el arreglo no es el código de estado sino el dueño del ticket, por eso la prueba relee y compara. Nos queda anotado que el atacante recibe un 200 y puede creer que funcionó, así que el registro del lado servidor es el que tiene que dejar constancia.
 
-A cada prueba la verificamos al revés antes de confiar en ella: revertimos el arreglo, la corrimos, y confirmamos que sí falla. Una prueba que pasa con el código roto no prueba nada.
+A cada prueba la vamos a verificar al revés antes de confiar en ella: con el arreglo revertido tiene que fallar, y así se va a documentar en cada PR. Una prueba que pasa con el código roto no prueba nada. Hoy solo la de A3 existe en el repo, y ya cumple esa condición: habilitada contra el baseline, falla.
 
 **Lo que vamos a implementar después.** Empezamos por D2, porque mientras el manejador siga convirtiendo todo en 500, la prueba de A3 fallaría por el código equivocado y parecería que el problema es otro. Después van A3 y A2, que comparten el componente de D1, y al final A1 junto con el resto del endurecimiento de configuración. Cada amenaza se va a cerrar en su propio Pull Request, con su reproducción, su evidencia antes/después, y su riesgo residual — igual que hicimos aquí, pero ya sobre el código arreglado.
 
